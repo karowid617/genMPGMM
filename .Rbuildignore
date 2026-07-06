@@ -2,3 +2,10 @@
 ^\.Rproj\.user$
 ^LICENSE\.md$
 ^README\.Rmd$
+^_pre_cleanup_snapshot$
+^_archive_cleanup$
+^scripts$
+^CLEANUP_REPORT\.md$
+^manual_testing.*\.R$
+^doc$
+^Meta$

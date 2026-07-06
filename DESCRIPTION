@@ -9,19 +9,32 @@ Authors@R:
       person("Joanna", "Zyla", role = "aut"),
       person("Mateusz", "Kania", role = "aut")
     )
-Maintainer: The package maintainer <karolina.widzisz@polsl.pl>
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
+Maintainer: Karolina Widzisz <karolina.widzisz@polsl.pl>
+Description: Generates synthetic data matrices from multi-profile Gaussian mixture
+    models (MP-GMM). Each latent profile defines a partition of features into groups
+    and a mixture of observation components. The generator controls inter-profile
+    feature-partition similarity via the Adjusted Rand Index (ARI) and component
+    separation via Mahalanobis distance, supporting diagonal and full covariance
+    structures, additive noise, and pure-noise feature replacement.
 License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.1
-Suggests: 
-    testthat (>= 3.0.0)
+Suggests:
+    testthat (>= 3.0.0),
+    ggplot2 (>= 3.4.0),
+    gridExtra,
+    scales,
+    cluster,
+    ggalluvial,
+    uwot,
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
 Config/testthat/edition: 3
 Imports: 
     MASS,
     mclust
 URL: https://github.com/karowid617/genMPGMM
 BugReports: https://github.com/karowid617/genMPGMM/issues
+Config/roxygen2/version: 8.0.0

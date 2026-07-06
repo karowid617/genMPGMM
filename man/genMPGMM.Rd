@@ -64,7 +64,7 @@ is generated using \code{scale}.}
 
 \item{ari_tol}{Tolerance for ARI optimization. By default \code{ari_tol = 0.01}.}
 
-\item{ari_max_iter}{Maximum number of ARI optimization iterations. By dafault \code{ari_max_iter = 10000}.}
+\item{ari_max_iter}{Maximum number of ARI optimization iterations. By default \code{ari_max_iter = 10000}.}
 
 \item{ari_swap_frac}{Fraction of labels swapped in ARI perturbation. By default \code{ari_swap_frac = 0.1}}
 

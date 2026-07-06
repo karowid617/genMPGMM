@@ -150,6 +150,15 @@ validate_generator_inputs <- function(
     if (!is.matrix(target_ari) || any(dim(target_ari) != c(P, P))) {
       stop("For `ari_mode = 'pairwise_matrix'`, `target_ari` must be a P x P matrix.")
     }
+    if (!isSymmetric(target_ari)) {
+      stop("For `ari_mode = 'pairwise_matrix'`, `target_ari` must be a symmetric matrix (ARI is symmetric).")
+    }
+    if (any(abs(diag(target_ari) - 1) > 1e-9)) {
+      stop("For `ari_mode = 'pairwise_matrix'`, all diagonal entries of `target_ari` must equal 1 (ARI of a partition with itself is always 1).")
+    }
+    if (any(target_ari < -1 - 1e-9) || any(target_ari > 1 + 1e-9)) {
+      stop("All entries of `target_ari` must be in [-1, 1].")
+    }
   }
 
   if (!is.logical(add_noise) || length(add_noise) != 1) {
@@ -204,6 +213,16 @@ perturb_labels_to_target_ari <- function(
     if (best_diff <= tol) break
   }
 
+  if (best_diff > tol) {
+    warning(sprintf(
+      paste0("ARI optimization did not converge: |achieved ARI - target ARI| = %.4f > tol = %.4f ",
+             "after %d iterations. Consider increasing `ari_max_iter` or relaxing `ari_tol`. ",
+             "Note: target ARI = %.4f may not be achievable if feature-group proportions differ ",
+             "between profiles."),
+      best_diff, tol, max_iter, target_ari
+    ))
+  }
+
   best_labels
 }
 
@@ -213,6 +232,13 @@ make_target_ari_vs_reference <- function(target_ari, P) {
   } else if (length(target_ari) == P - 1) {
     c(1, target_ari)
   } else if (length(target_ari) == P) {
+    if (abs(target_ari[1] - 1) > 1e-9) {
+      warning(sprintf(
+        paste0("In `ari_mode = 'vs_reference'`, `target_ari[1]` is ignored: ",
+               "ARI of profile 1 with itself is always 1. Got %.4f."),
+        target_ari[1]
+      ))
+    }
     target_ari
   } else {
     stop("Invalid `target_ari` length for `vs_reference` mode.")
@@ -319,9 +345,21 @@ generate_feature_partitions_pairwise <- function(
 
     if (!improved && iter %% 1000 == 0) {
       current_ari <- ari_matrix_from_list(s_list)
-      max_abs_diff <- max(abs(current_ari - target_ari_matrix))
+      off_diag    <- lower.tri(target_ari_matrix)
+      max_abs_diff <- max(abs(current_ari[off_diag] - target_ari_matrix[off_diag]))
       if (max_abs_diff <= ari_tol) break
     }
+  }
+
+  current_ari  <- ari_matrix_from_list(s_list)
+  off_diag     <- lower.tri(target_ari_matrix)
+  final_max_diff <- max(abs(current_ari[off_diag] - target_ari_matrix[off_diag]))
+  if (final_max_diff > ari_tol) {
+    warning(sprintf(
+      paste0("Pairwise ARI optimization did not converge: max |achieved - target| = %.4f > tol = %.4f ",
+             "after %d iterations."),
+      final_max_diff, ari_tol, ari_max_iter
+    ))
   }
 
   s_list
@@ -448,21 +486,22 @@ mahalanobis_distance_matrix <- function(mu_mat, cov_mtx) {
 }
 
 make_regular_simplex <- function(K) {
-  # Zwraca macierz K x (K-1), której wiersze są wierzchołkami
-  # regular simplex: wszystkie pary wierszy mają tę samą odległość.
+  # Returns a K x (K-1) matrix whose rows are the K vertices of a regular
+  # simplex: all pairs of rows have equal Euclidean distance (= sqrt(2)).
 
   if (K == 1) {
     return(matrix(0, nrow = 1, ncol = 1))
   }
 
-  # Start z macierzy I - 1/K
+  # Centering matrix I - (1/K) J has K-1 non-zero eigenvalues all equal to 1.
+  # Its left singular vectors (scaled by singular values) embed the K simplex
+  # vertices into (K-1)-dimensional Euclidean space.
   A <- diag(K) - matrix(1 / K, nrow = K, ncol = K)
 
-  # SVD i przejście do przestrzeni K-1 wymiarowej
-  sv <- svd(A)
+  sv     <- svd(A)
   coords <- sv$u[, 1:(K - 1), drop = FALSE] %*% diag(sv$d[1:(K - 1)], nrow = K - 1)
 
-  # Centrowanie numeryczne
+  # Numerical re-centering (theoretically already centered)
   coords <- scale(coords, center = TRUE, scale = FALSE)
 
   coords
@@ -481,9 +520,8 @@ generate_profile_mean_structure <- function(
   M <- length(s_p)
 
   # ---------------------------------------
-  # 1. Regular simplex dla komponentów
-  #    K_p punktów w przestrzeni K_p - 1,
-  #    wszystkie pairwise distances są równe
+  # 1. K_p vertices of a regular simplex in (K_p-1) dimensions.
+  #    All pairwise Euclidean distances between vertices are equal.
   # ---------------------------------------
   simplex <- make_regular_simplex(K_p)   # K_p x (K_p - 1)
 
@@ -494,10 +532,10 @@ generate_profile_mean_structure <- function(
   latent_dim <- ncol(simplex)
 
   # ---------------------------------------
-  # 2. Dla każdej grupy cech losujemy mapowanie
-  #    z przestrzeni simplex do pojedynczej cechy
-  #    To daje podobny wzorzec w obrębie grupy,
-  #    ale nie identyczny.
+  # 2. Per feature-group: a random loading vector of dimension latent_dim.
+  #    Features within the same group share the same base loading, so their
+  #    component-mean profiles are similar (but not identical due to per-feature
+  #    noise added below).
   # ---------------------------------------
   group_loadings <- matrix(
     rnorm(L_p * latent_dim, mean = 0, sd = template_sd),
@@ -506,9 +544,9 @@ generate_profile_mean_structure <- function(
   )
 
   # ---------------------------------------
-  # 3. Budujemy delta: K_p x M
-  #    każda cecha dostaje profil po komponentach
-  #    jako simplex %*% loading grupy + mały szum
+  # 3. Build delta (K_p x M): component-mean offsets for each feature.
+  #    delta[k, m] = simplex[k, ] %*% loading_m, where loading_m is the
+  #    group loading for feature m plus a small per-feature perturbation.
   # ---------------------------------------
   delta <- matrix(0, nrow = K_p, ncol = M)
 
@@ -517,36 +555,34 @@ generate_profile_mean_structure <- function(
 
     loading_m <- group_loadings[l, ]
 
-    # małe odchylenie cechy od grupy
+    # Small per-feature deviation from the group loading
     if (latent_dim == 1) {
       loading_m <- loading_m + rnorm(1, mean = 0, sd = feature_sd_within_group)
     } else {
       loading_m <- loading_m + rnorm(latent_dim, mean = 0, sd = feature_sd_within_group)
     }
 
-    # profil średnich tej cechy przez komponenty
     delta[, m] <- simplex %*% loading_m
   }
 
   # ---------------------------------------
-  # 4. Skalowanie do target_mahalanobis
-  #    Tu używamy średniej odległości pairwise
-  #    (można też mediany)
+  # 4. Scale delta so that the MEDIAN pairwise Mahalanobis distance between
+  #    component means equals target_mahalanobis.
+  #    For K_p = 2 this is exact; for K_p > 2 individual pairs may deviate.
   # ---------------------------------------
   if (K_p > 1) {
     D0 <- mahalanobis_distance_matrix(delta, cov_mtx_p)
     dvals <- D0[upper.tri(D0)]
     dvals <- dvals[is.finite(dvals) & dvals > 0]
 
-    # current_mean <- if (length(dvals) == 0) 1 else mean(dvals)
-    # scale_factor <- target_mahalanobis / current_mean
     current_median <- if (length(dvals) == 0) 1 else median(dvals)
     scale_factor <- target_mahalanobis / current_median
     delta <- delta * scale_factor
   }
 
   # ---------------------------------------
-  # 5. Baseline per feature
+  # 5. Per-feature baseline shift (same for all K_p components, so it cancels
+  #    in pairwise Mahalanobis distances between means).
   # ---------------------------------------
   feature_baselines <- rnorm(M, mean = 0, sd = baseline_sd)
 

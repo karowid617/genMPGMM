@@ -5,3 +5,21 @@
 .httr-oauth
 .DS_Store
 .quarto
+
+# Generated PDF side-effects
+Rplots.pdf
+*.pdf
+
+# R CMD check artefacts
+*.Rcheck/
+
+# Cleanup folders (not part of the package)
+_pre_cleanup_snapshot/
+_archive_cleanup/
+
+# Local exploration scripts (not part of the package)
+scripts/
+
+# Documentation auto-built from vignettes (keep /doc local only)
+/doc/
+/Meta/

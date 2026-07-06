@@ -25,7 +25,7 @@
 #' @param noise_feature_fraction Fraction of features replaced by noise features. By default \code{noise_feature_fraction = 0.1}.
 #' @param ari_mode ARI control mode. This should be \code{"vs_reference"} (similarity specified relative to the first profile) or \code{"pairwise_matrix"} (similarity specified by user for all profile pairs).
 #' @param ari_tol Tolerance for ARI optimization. By default \code{ari_tol = 0.01}.
-#' @param ari_max_iter Maximum number of ARI optimization iterations. By dafault \code{ari_max_iter = 10000}.
+#' @param ari_max_iter Maximum number of ARI optimization iterations. By default \code{ari_max_iter = 10000}.
 #' @param ari_swap_frac Fraction of labels swapped in ARI perturbation. By default \code{ari_swap_frac = 0.1}
 #' @param profile_weights Profile weights (optional). Vector of length P,
 #'        controlling how strongly each profile contributes to the final data matrix.

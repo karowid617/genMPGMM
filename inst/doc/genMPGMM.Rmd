@@ -1,0 +1,382 @@
+---
+title: "Introduction to genMPGMM"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{genMPGMM}
+  %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse  = TRUE,
+  comment   = "#>",
+  fig.width = 7,
+  fig.height = 4
+)
+```
+
+```{r logo, echo=FALSE, out.width="160px", out.extra='style="float:right; padding:10px"'}
+knitr::include_graphics("../man/figures/logo.png")
+```
+
+## Motivation
+
+Benchmarking clustering and multi-omics integration methods requires
+realistic synthetic data. `genMPGMM` generates labelled data matrices
+from **multi-profile Gaussian mixture models (MP-GMM)**.
+
+The key idea is that a single data matrix `X` (M features × N
+observations) is shaped by **P latent profiles**, each of which
+independently defines
+
+-   a partition of features into groups (controlled by ARI relative to
+    the other profiles), and
+-   a mixture of observation components (controlled by Mahalanobis
+    distance between component means).
+
+This lets you tune, independently for each profile, how similar the
+feature structure is across profiles and how separated the observation
+clusters are — giving you fine-grained control over ground-truth
+complexity that simple single-profile GMMs cannot provide.
+
+------------------------------------------------------------------------
+
+## Installation and loading
+
+``` r
+# Install from GitHub (once the repository is public)
+# remotes::install_github("karowid617/genMPGMMv2")
+
+# During development, load directly from source
+pkgload::load_all(".")
+```
+
+```{r load}
+library(genMPGMM)
+```
+
+------------------------------------------------------------------------
+
+## Basic usage
+
+The main function is `genMPGMM()`. The minimal required arguments are:
+
+| Argument                    | Meaning                                                                         |
+|------------------------------------|------------------------------------|
+| `n_feature_patterns`        | Number of feature groups per profile (vector of length P)                       |
+| `n_components`              | Number of Gaussian components per profile (vector of length P)                  |
+| `feature_group_proportions` | List of proportion vectors (one per profile); controls how M features are split |
+| `mixing_proportions`        | List of proportion vectors (one per profile); controls component sizes          |
+| `dist_mahalanobis`          | Target pairwise Mahalanobis distance between component means                    |
+| `target_ari`                | Target ARI of each profile's feature partition relative to profile 1            |
+| `M`                         | Total number of features                                                        |
+| `N`                         | Total number of observations                                                    |
+| `covariance_spec`           | List specifying within-component covariance (`"diagonal"` or `"full_shared"`)   |
+
+```{r basic}
+set.seed(42)
+
+dat <- genMPGMM(
+  n_feature_patterns        = c(2, 2),
+  n_components              = c(2, 2),
+  feature_group_proportions = list(c(0.5, 0.5), c(0.6, 0.4)),
+  mixing_proportions        = list(c(0.5, 0.5), c(0.4, 0.6)),
+  dist_mahalanobis          = c(3, 4),
+  target_ari                = c(1, 0.3),
+  M                         = 60,
+  N                         = 80,
+  covariance_spec           = list(type = "diagonal"),
+  noise_feature_fraction    = 0,
+  seed                      = 42
+)
+
+class(dat)
+```
+
+The result is an object of class `"MPObject"`.
+
+```{r summary}
+summary(dat)
+```
+
+------------------------------------------------------------------------
+
+## The MPObject structure
+
+An `MPObject` is a named list. The most important fields are listed
+below.
+
+### Data matrix
+
+```{r Xdim}
+dim(dat$X)          # M x N
+```
+
+`dat$X` is the M × N data matrix you would pass to a downstream method.
+`dat$X_signal` is the same matrix without additive noise (useful for
+diagnostics).
+
+### Feature partitions
+
+```{r s}
+# s[[p]] is an integer vector of length M
+# giving the feature-group label for each feature under profile p
+length(dat$s)          # P
+table(dat$s[[1]])      # group sizes in profile 1
+table(dat$s[[2]])      # group sizes in profile 2
+```
+
+### Observation (component) labels
+
+```{r z}
+# z[[p]] is an integer vector of length N
+# giving the component label for each observation under profile p
+length(dat$z)
+table(dat$z[[1]])
+table(dat$z[[2]])
+```
+
+`dat$z[[p]]` is the ground-truth cluster assignment under profile `p`.
+These labels can be used directly as the true partition when evaluating
+a clustering algorithm.
+
+### Achieved ARI between feature partitions
+
+```{r ari}
+# P x P matrix; entry [p, q] = ARI between s[[p]] and s[[q]]
+round(dat$achieved_ari_features, 3)
+```
+
+The target ARI between profile 2 and profile 1 was `0.3`; the achieved
+value is shown in `[1, 2]` (and the symmetric `[2, 1]`).
+
+### Achieved Mahalanobis distances
+
+```{r mahal}
+# achieved_mahalanobis[[p]] is a K_p x K_p matrix of pairwise distances
+dat$achieved_mahalanobis[[1]]   # profile 1, K=2 components
+dat$achieved_mahalanobis[[2]]   # profile 2, K=2 components
+```
+
+**Implementation note:** for K = 2 components the off-diagonal distance
+equals the target exactly. For K \> 2, `dist_mahalanobis` is the
+*median* of all pairwise off-diagonal distances; individual pairs may
+differ but their median matches the target within `ari_tol`.
+
+------------------------------------------------------------------------
+
+## Key parameters explained
+
+### `target_ari` — controlling inter-profile feature similarity
+
+`target_ari` is a vector of length P. The first element is always 1
+(profile 1 is the reference). Subsequent values are the desired Adjusted
+Rand Index between that profile's feature partition and profile 1's.
+
+```{r ari_example, eval = FALSE}
+# Profile 2 feature partition almost identical to profile 1
+target_ari = c(1, 0.9)
+
+# Profile 2 feature partition completely independent of profile 1
+target_ari = c(1, 0.0)
+```
+
+ARI optimization is iterative. For very small M or extreme targets the
+optimizer may not reach `ari_tol` within `ari_max_iter` iterations; a
+warning is emitted in that case.
+
+### `dist_mahalanobis` — controlling component separation
+
+A higher value places component means further apart (better cluster
+separation). For diagonal covariance with unit variances,
+`dist_mahalanobis = 3` gives moderate separation; values below 1 produce
+heavily overlapping clusters.
+
+```{r mahal_example}
+set.seed(1)
+well_separated <- genMPGMM(
+  n_feature_patterns        = c(2, 2),
+  n_components              = c(3, 2),
+  feature_group_proportions = list(c(0.5, 0.5), c(0.5, 0.5)),
+  mixing_proportions        = list(c(1/3, 1/3, 1/3), c(0.5, 0.5)),
+  dist_mahalanobis          = c(5, 3),
+  target_ari                = c(1, 0.5),
+  M = 40, N = 60,
+  covariance_spec           = list(type = "diagonal"),
+  noise_feature_fraction    = 0,
+  seed = 1
+)
+
+# Profile 1 has K=3 components: three off-diagonal pairwise distances; median ≈ 5
+D <- well_separated$achieved_mahalanobis[[1]]
+round(D[upper.tri(D)], 2)
+```
+
+### `covariance_spec` — within-component covariance
+
+**Diagonal covariance** (fast, independent features):
+
+```{r cov_diag, eval = FALSE}
+covariance_spec = list(type = "diagonal")                   # unit variances
+covariance_spec = list(type = "diagonal", diag_values = 2)  # variance = 2 everywhere
+covariance_spec = list(type = "diagonal",
+                       diag_values = runif(M, 0.5, 1.5))    # feature-specific variances
+```
+
+**Full shared covariance** (correlated features, one covariance matrix
+per profile):
+
+```{r cov_full, eval = FALSE}
+covariance_spec = list(type = "full_shared")                 # random positive-definite matrix
+covariance_spec = list(type = "full_shared", cov_mtx = Sigma) # supply your own M x M matrix
+```
+
+### `noise_feature_fraction` — pure-noise features
+
+A fraction of randomly chosen features is overwritten with independent
+standard-normal values that carry no cluster signal. Noise feature
+indices are stored in `dat$noise_feature_indices`.
+
+```{r noise}
+noisy <- genMPGMM(
+  n_feature_patterns        = c(2, 2),
+  n_components              = c(2, 2),
+  feature_group_proportions = list(c(0.5, 0.5), c(0.5, 0.5)),
+  mixing_proportions        = list(c(0.5, 0.5), c(0.5, 0.5)),
+  dist_mahalanobis          = 3,
+  target_ari                = c(1, 0.5),
+  M = 60, N = 80,
+  covariance_spec           = list(type = "diagonal"),
+  noise_feature_fraction    = 0.2,   # 20 % of features are pure noise
+  seed = 7
+)
+
+cat("Noise features:", length(noisy$noise_feature_indices), "out of", nrow(noisy$X), "\n")
+cat("Noise feature indices:", head(noisy$noise_feature_indices), "...\n")
+```
+
+### `add_noise` — global additive noise
+
+Independently of `noise_feature_fraction`, you can add low-level i.i.d.
+Gaussian noise to the entire matrix:
+
+```{r addnoise, eval = FALSE}
+genMPGMM(..., add_noise = TRUE, noise_sd = 0.3)
+```
+
+------------------------------------------------------------------------
+
+## Multi-profile labels and joint ground truth
+
+Each profile produces its own component labels `z[[p]]`. Because
+different profiles may assign different numbers of components to the
+same observation, there is no single "correct" partition — instead you
+choose which profile's labels to use as ground truth depending on your
+analysis goal.
+
+```{r multilabel}
+set.seed(10)
+mp <- genMPGMM(
+  n_feature_patterns        = c(3, 2),
+  n_components              = c(3, 2),
+  feature_group_proportions = list(c(0.4, 0.3, 0.3), c(0.6, 0.4)),
+  mixing_proportions        = list(c(0.4, 0.3, 0.3), c(0.5, 0.5)),
+  dist_mahalanobis          = c(4, 3),
+  target_ari                = c(1, 0.2),
+  M = 60, N = 90,
+  covariance_spec           = list(type = "diagonal"),
+  noise_feature_fraction    = 0,
+  seed = 10
+)
+
+# Profile 1 sees 3 groups; profile 2 sees 2
+cat("Profile 1 labels (first 10 obs):", head(mp$z[[1]], 10), "\n")
+cat("Profile 2 labels (first 10 obs):", head(mp$z[[2]], 10), "\n")
+```
+
+------------------------------------------------------------------------
+
+## Diagnostic report
+
+If `ggplot2`, `gridExtra`, and `scales` are installed, you can produce a
+PDF diagnostic report:
+
+```{r report, eval = FALSE}
+# Landscape A4 report -- all plots
+report_MPObject(dat, file = "my_report.pdf")
+
+# Selected plots only
+report_MPObject(dat, file = "my_report_partial.pdf", which = c(1, 4, 6))
+```
+
+The report is always A4 landscape. It begins with a summary table (one
+row per profile) followed by one page per plot section. PCA and
+component-mean panels are paginated automatically, so the layout remains
+readable for any P and K.
+
+------------------------------------------------------------------------
+
+## Reproducibility
+
+Always set `seed` to ensure the same data matrix across runs:
+
+```{r repro}
+args <- list(
+  n_feature_patterns        = c(2, 2),
+  n_components              = c(2, 2),
+  feature_group_proportions = list(c(0.5, 0.5), c(0.5, 0.5)),
+  mixing_proportions        = list(c(0.5, 0.5), c(0.5, 0.5)),
+  dist_mahalanobis          = c(3, 3),
+  target_ari                = c(1, 0.5),
+  M = 30, N = 40,
+  covariance_spec           = list(type = "diagonal"),
+  noise_feature_fraction    = 0,
+  seed = 99
+)
+
+a <- do.call(genMPGMM, args)
+b <- do.call(genMPGMM, args)
+identical(a$X, b$X)
+```
+
+**Note:** if `seed` is `NULL` the generator uses the current global RNG
+state. Set `seed` explicitly in any reproducible pipeline.
+
+<!-- ------------------------------------------------------------------------ -->
+
+<!-- ## Limitations -->
+
+<!-- -   **ARI convergence for small M.** The ARI optimizer is a -->
+<!--     hill-climbing heuristic. With very few features (M \< 20) or extreme -->
+<!--     targets (ARI close to −1) it may not converge within `ari_max_iter` -->
+<!--     iterations. Increase `ari_max_iter` or relax the target. -->
+
+<!-- -   **Mahalanobis target is a median for K \> 2.** The exact target is -->
+<!--     matched for K = 2. For K \> 2 the generator targets the *median* -->
+<!--     pairwise distance; individual pairs may deviate. -->
+
+<!-- -   **Profile signals are additive.** The final matrix is the sum of P -->
+<!--     profile signals (optionally weighted by `profile_weights`). Profiles -->
+<!--     with very different Mahalanobis scales may dominate or drown each -->
+<!--     other; inspect `dat$X_signal` vs `dat$X` if needed. -->
+
+<!-- -   **No observation-level multi-profile ground truth.** Each profile -->
+<!--     produces independent component labels. There is no built-in -->
+<!--     mechanism for enforcing that a single observation belongs to a -->
+<!--     specific component across all profiles simultaneously. -->
+
+<!-- -   **Full covariance is memory-intensive.** For large M, -->
+<!--     `type = "full_shared"` requires storing and inverting M × M -->
+<!--     matrices. Prefer `type = "diagonal"` for M \> 500. -->
+
+<!-- ------------------------------------------------------------------------ -->
+
+<!-- ## Session info -->
+
+<!-- ```{r sessioninfo} -->
+<!-- sessionInfo() -->
+<!-- ``` -->
